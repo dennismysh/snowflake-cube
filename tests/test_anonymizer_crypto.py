@@ -232,6 +232,143 @@ def test_rotation_depends_on_key():
         )
 
 
+# ===========================================================================
+# D¾. XOR and multiplication sub-keys must be independently derived
+#     Regression for Finding 6 (Same Key Material Drives Both XOR and
+#     Multiplication): The original cipher used a single round_key for both
+#     XOR mixing and odd-multiplication:
+#         x = half ^ round_key
+#         x = x * (round_key | 1)
+#     Because both operations depend on the same variable, a linear
+#     approximation of the output becomes a function of one key variable
+#     rather than two, halving the attacker's search effort.  The fix
+#     derives independent rk_xor and rk_mul per round via domain-separated
+#     HMAC labels (0x01 / 0x02 suffixes).
+# ===========================================================================
+
+
+def test_xor_and_mul_subkeys_differ():
+    """rk_xor and rk_mul must NOT be identical within each round.
+
+    If both sub-keys were derived from the same HMAC call (or the same
+    domain-separation label), they would be equal and a single linear
+    approximation would reduce the attacker's search space by half.
+    """
+    for key in [0, 1, 0xDEADBEEF, 0x1234_5678_9ABC_DEF0, 2**64 - 1]:
+        sa = SnowflakeAnonymizer(key=key, bit_width=64)
+        same_count = sum(
+            1 for rk_xor, rk_mul, _ in sa._round_keys if rk_xor == rk_mul
+        )
+        # With independent 32-bit sub-keys the probability of a collision per
+        # round is ~1/2^32.  Across 16 rounds we expect zero collisions.
+        assert same_count <= 1, (
+            f"key={key}: rk_xor == rk_mul in {same_count}/16 rounds — "
+            f"XOR and multiplication sub-keys may share derivation material"
+        )
+
+
+def test_xor_and_mul_subkeys_differ_narrow():
+    """Even for narrow widths (bit_width=4, w=2), rk_xor and rk_mul must be
+    independently derived so the effective key space is not halved.
+
+    For w=2 each sub-key has only 4 possible values, so accidental
+    collisions are common (~25% per round).  But the *schedules* across
+    all 16 rounds should still differ between the two sub-key streams.
+    """
+    for key in [0, 42, 0xCAFE, 0xDEADBEEF]:
+        sa = SnowflakeAnonymizer(key=key, bit_width=4)
+        xor_schedule = tuple(rk_xor for rk_xor, _, _ in sa._round_keys)
+        mul_schedule = tuple(rk_mul for _, rk_mul, _ in sa._round_keys)
+        assert xor_schedule != mul_schedule, (
+            f"key={key}, bit_width=4: rk_xor schedule is identical to rk_mul "
+            f"schedule — sub-keys are not independently derived"
+        )
+
+
+def test_xor_and_mul_subkeys_statistically_independent():
+    """The correlation between rk_xor and rk_mul across rounds should be low.
+
+    If both sub-keys were derived from the same HMAC (just truncated
+    differently), they would show systematic correlation.  Independent
+    HMAC derivations should produce near-zero Pearson correlation.
+    """
+    sa = SnowflakeAnonymizer(key=0xDEADBEEF_CAFEBABE, bit_width=64)
+    xor_vals = [rk_xor for rk_xor, _, _ in sa._round_keys]
+    mul_vals = [rk_mul for _, rk_mul, _ in sa._round_keys]
+
+    n = len(xor_vals)
+    mean_x = sum(xor_vals) / n
+    mean_m = sum(mul_vals) / n
+
+    cov = sum((x - mean_x) * (m - mean_m) for x, m in zip(xor_vals, mul_vals)) / n
+    std_x = (sum((x - mean_x) ** 2 for x in xor_vals) / n) ** 0.5
+    std_m = (sum((m - mean_m) ** 2 for m in mul_vals) / n) ** 0.5
+
+    if std_x > 0 and std_m > 0:
+        correlation = abs(cov / (std_x * std_m))
+    else:
+        correlation = 0.0
+
+    # With only 16 samples, random correlation can be noisy, but a
+    # systematic dependency (same derivation) would show |r| > 0.8.
+    assert correlation < 0.8, (
+        f"Pearson |r| = {correlation:.3f} between rk_xor and rk_mul — "
+        f"sub-keys may not be independently derived"
+    )
+
+
+def test_changing_xor_key_does_not_predict_mul_key():
+    """Varying the master key should change rk_xor and rk_mul independently.
+
+    If both sub-keys were the same value, their deltas across master keys
+    would always match.  With independent derivation, the per-round deltas
+    should diverge.
+    """
+    sa_a = SnowflakeAnonymizer(key=0, bit_width=64)
+    sa_b = SnowflakeAnonymizer(key=1, bit_width=64)
+
+    xor_deltas = [
+        (a[0] ^ b[0]) for a, b in zip(sa_a._round_keys, sa_b._round_keys)
+    ]
+    mul_deltas = [
+        (a[1] ^ b[1]) for a, b in zip(sa_a._round_keys, sa_b._round_keys)
+    ]
+    # If rk_xor == rk_mul, then xor_deltas == mul_deltas for every round.
+    assert xor_deltas != mul_deltas, (
+        "XOR-key deltas and MUL-key deltas are identical across a key change — "
+        "sub-keys appear to be derived from the same source"
+    )
+
+
+def test_round_function_output_differs_with_independent_subkeys():
+    """The round function must produce different results when rk_xor and
+    rk_mul are swapped — proving they are used in structurally different
+    roles and not interchangeable.
+
+    If both operations used the same key variable, swapping them would be
+    a no-op for certain inputs.
+    """
+    sa = SnowflakeAnonymizer(key=0xDEADBEEF, bit_width=64)
+    rk_xor, rk_mul, rk_rot = sa._round_keys[0]
+
+    # Skip the test if keys happen to be equal (astronomically unlikely for w=32)
+    if rk_xor == rk_mul:
+        return
+
+    mismatches = 0
+    for half in range(0, 1000, 7):
+        out_normal = sa._arm(half, rk_xor, rk_mul, rk_rot)
+        out_swapped = sa._arm(half, rk_mul, rk_xor, rk_rot)
+        if out_normal != out_swapped:
+            mismatches += 1
+
+    total = len(range(0, 1000, 7))
+    assert mismatches >= total * 0.9, (
+        f"Only {mismatches}/{total} mismatches when swapping rk_xor/rk_mul — "
+        f"sub-keys may not be providing independent security contributions"
+    )
+
+
 def test_rotation_is_not_fixed_w_over_6():
     """Rotation must NOT be the old fixed formula max(1, w//6).
 
