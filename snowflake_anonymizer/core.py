@@ -32,6 +32,9 @@ Bank-grade security upgrades over a basic Feistel cipher:
                               for passphrase-based key derivation
   • Salt support          — 16-byte random salt per passphrase to defeat
                               rainbow-table and precomputation attacks
+  • S-box substitution    — AES (Rijndael) 8-bit S-box provides true
+                              non-linearity over GF(2), preventing the
+                              cipher from being expressed as an affine map
   • Double-fold diffusion — strengthened round function for broader avalanche
 """
 
@@ -51,6 +54,57 @@ _ROUNDS: int = 16
 # for password-based key derivation.  Major banks and PCI-DSS compliance use
 # this floor.
 _PBKDF2_ITERATIONS: int = 600_000
+
+# ---------------------------------------------------------------------------
+# Non-linear substitution tables (S-boxes)
+# ---------------------------------------------------------------------------
+
+# AES (Rijndael) 8-bit S-box — provides optimal non-linearity over GF(2)^8.
+# Each entry maps an 8-bit input to an 8-bit output via the composition of
+# multiplicative inversion in GF(2^8) and an affine transformation, giving
+# maximum non-linearity (distance 112 from any affine function).
+_SBOX_8: tuple[int, ...] = (
+    0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5,
+    0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
+    0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0,
+    0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
+    0xB7, 0xFD, 0x93, 0x26, 0x36, 0x3F, 0xF7, 0xCC,
+    0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
+    0x04, 0xC7, 0x23, 0xC3, 0x18, 0x96, 0x05, 0x9A,
+    0x07, 0x12, 0x80, 0xE2, 0xEB, 0x27, 0xB2, 0x75,
+    0x09, 0x83, 0x2C, 0x1A, 0x1B, 0x6E, 0x5A, 0xA0,
+    0x52, 0x3B, 0xD6, 0xB3, 0x29, 0xE3, 0x2F, 0x84,
+    0x53, 0xD1, 0x00, 0xED, 0x20, 0xFC, 0xB1, 0x5B,
+    0x6A, 0xCB, 0xBE, 0x39, 0x4A, 0x4C, 0x58, 0xCF,
+    0xD0, 0xEF, 0xAA, 0xFB, 0x43, 0x4D, 0x33, 0x85,
+    0x45, 0xF9, 0x02, 0x7F, 0x50, 0x3C, 0x9F, 0xA8,
+    0x51, 0xA3, 0x40, 0x8F, 0x92, 0x9D, 0x38, 0xF5,
+    0xBC, 0xB6, 0xDA, 0x21, 0x10, 0xFF, 0xF3, 0xD2,
+    0xCD, 0x0C, 0x13, 0xEC, 0x5F, 0x97, 0x44, 0x17,
+    0xC4, 0xA7, 0x7E, 0x3D, 0x64, 0x5D, 0x19, 0x73,
+    0x60, 0x81, 0x4F, 0xDC, 0x22, 0x2A, 0x90, 0x88,
+    0x46, 0xEE, 0xB8, 0x14, 0xDE, 0x5E, 0x0B, 0xDB,
+    0xE0, 0x32, 0x3A, 0x0A, 0x49, 0x06, 0x24, 0x5C,
+    0xC2, 0xD3, 0xAC, 0x62, 0x91, 0x95, 0xE4, 0x79,
+    0xE7, 0xC8, 0x37, 0x6D, 0x8D, 0xD5, 0x4E, 0xA9,
+    0x6C, 0x56, 0xF4, 0xEA, 0x65, 0x7A, 0xAE, 0x08,
+    0xBA, 0x78, 0x25, 0x2E, 0x1C, 0xA6, 0xB4, 0xC6,
+    0xE8, 0xDD, 0x74, 0x1F, 0x4B, 0xBD, 0x8B, 0x8A,
+    0x70, 0x3E, 0xB5, 0x66, 0x48, 0x03, 0xF6, 0x0E,
+    0x61, 0x35, 0x57, 0xB9, 0x86, 0xC1, 0x1D, 0x9E,
+    0xE1, 0xF8, 0x98, 0x11, 0x69, 0xD9, 0x8E, 0x94,
+    0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
+    0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68,
+    0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16,
+)
+
+# PRESENT lightweight cipher 4-bit S-box — used for half-widths 4–7 bits
+# where a full byte S-box cannot be applied.  Non-linearity = 4 (optimal
+# for a 4-bit bijection).
+_SBOX_4: tuple[int, ...] = (
+    0xC, 0x5, 0x6, 0xB, 0x9, 0x0, 0xA, 0xD,
+    0x3, 0xE, 0xF, 0x8, 0x4, 0x7, 0x1, 0x2,
+)
 
 
 def _key_to_bytes(key: int) -> bytes:
@@ -75,6 +129,9 @@ class SnowflakeAnonymizer:
       arbitrary-precision integer keys are reduced modulo 2²⁵⁶.
     - **PBKDF2-HMAC-SHA256 passphrase hashing** — 600 000 iterations with
       a 16-byte random salt; see :meth:`from_passphrase`.
+    - **S-box substitution** — each round applies the AES (Rijndael) 8-bit
+      S-box (or the PRESENT 4-bit S-box for narrow widths) to introduce
+      non-linearity over GF(2), preventing algebraic linearization attacks.
     - **Double-fold diffusion** — the round function applies two bit-folding
       steps, giving broader avalanche than a single fold.
 
@@ -137,6 +194,30 @@ class SnowflakeAnonymizer:
     # Round (arm) function
     # ------------------------------------------------------------------
 
+    def _sbox_sub(self, x: int) -> int:
+        """Apply non-linear S-box substitution to break GF(2) linearity.
+
+        Uses the AES (Rijndael) 8-bit S-box for half-widths >= 8, or the
+        PRESENT 4-bit S-box for half-widths 4–7.  For half-widths < 4
+        (bit_width < 8), the domain is too small (≤ 16 values) for any
+        non-linear substitution to exist, so the value passes through
+        unchanged.
+        """
+        w = self._half
+        mask = self._half_mask
+        if w >= 8:
+            result = 0
+            for i in range(0, w, 8):
+                result |= _SBOX_8[(x >> i) & 0xFF] << i
+            return result & mask
+        elif w >= 4:
+            result = 0
+            for i in range(0, w, 4):
+                result |= _SBOX_4[(x >> i) & 0xF] << i
+            return result & mask
+        else:
+            return x
+
     def _arm(self, half: int, round_key: int) -> int:
         """Non-linear mixing function applied at each Feistel round.
 
@@ -144,8 +225,12 @@ class SnowflakeAnonymizer:
 
           1. XOR with round key     — introduces key material
           2. Rotate left by ⌊w/6⌋  — mirrors 60° rotational symmetry
-          3. Multiply by odd value  — non-linear diffusion
-          4. Double-fold            — mixes upper bits into lower half at
+          3. S-box substitution     — non-linear confusion layer; breaks
+                                     the GF(2) linearity of the surrounding
+                                     arithmetic so the cipher cannot be
+                                     expressed as an affine map C = A·P + b
+          4. Multiply by odd value  — linear diffusion across bit positions
+          5. Double-fold            — mixes upper bits into lower half at
                                      two granularities for stronger avalanche
 
         The Feistel construction guarantees global bijectivity regardless of
@@ -160,7 +245,13 @@ class SnowflakeAnonymizer:
         rot = max(1, w // 6)
         x = ((x << rot) | (x >> (w - rot))) & mask
 
-        # Multiply by an odd number derived from the round key for non-linearity
+        # S-box substitution: the only non-linear-over-GF(2) step.
+        # Without this, every operation (XOR, rotation, multiply-by-odd,
+        # shift-XOR fold) is linear over GF(2), making the entire cipher
+        # affine and breakable with O(n) known plaintexts.
+        x = self._sbox_sub(x)
+
+        # Multiply by an odd number derived from the round key for diffusion
         x = (x * (round_key | 1)) & mask
 
         # Primary fold: mix upper half of word into lower half.
