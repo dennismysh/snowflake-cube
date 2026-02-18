@@ -155,12 +155,20 @@ class SnowflakeAnonymizer:
     """
 
     def __init__(self, key: int = 0, bit_width: int = 64) -> None:
+        if not isinstance(key, int) or isinstance(key, bool):
+            raise TypeError(f"key must be an integer, got {type(key).__name__}")
+        if not isinstance(bit_width, int) or isinstance(bit_width, bool):
+            raise TypeError(
+                f"bit_width must be an integer, got {type(bit_width).__name__}"
+            )
         if bit_width < 2 or bit_width % 2 != 0:
             raise ValueError("bit_width must be a positive even integer")
 
         self._half = bit_width // 2
         self._half_mask = (1 << self._half) - 1
         self._full_mask = (1 << bit_width) - 1
+
+        self.salt: bytes | None = None
 
         self._round_keys = self._crystallize(key)
 
@@ -382,6 +390,15 @@ class SnowflakeAnonymizer:
             sa2 = SnowflakeAnonymizer.from_passphrase("winter is cold",
                                                        salt=stored_salt)
         """
+        if not isinstance(passphrase, str):
+            raise TypeError(
+                f"passphrase must be a string, got {type(passphrase).__name__}"
+            )
+        if salt is not None and not isinstance(salt, bytes):
+            raise TypeError(
+                f"salt must be bytes or None, got {type(salt).__name__}"
+            )
+
         if salt is None:
             salt = os.urandom(16)
 
@@ -402,6 +419,10 @@ class SnowflakeAnonymizer:
     # ------------------------------------------------------------------
 
     def _check_range(self, value: int) -> None:
+        if not isinstance(value, int):
+            raise TypeError(
+                f"value must be an integer, got {type(value).__name__}"
+            )
         if not (0 <= value <= self._full_mask):
             raise ValueError(
                 f"Value {value!r} is out of range for a {self._half * 2}-bit anonymizer "
