@@ -496,10 +496,26 @@ def test_list_input_raises(sa):
 # ===========================================================================
 
 def test_min_bit_width_2():
-    """bit_width=2 is the smallest allowed; domain is {0, 1, 2, 3}."""
+    """bit_width=2 is the smallest allowed; domain is {0, 1, 2, 3}.
+
+    In addition to bijectivity, verify the cipher is NOT the identity —
+    at least one output must differ from its input.  A degenerate round
+    function (e.g. always returning 0) would make every round a pure swap;
+    an even number of swaps composes to the identity, which passes a
+    naive bijectivity check but provides zero anonymization.
+    """
     sa = SnowflakeAnonymizer(key=0xDEAD, bit_width=2)
-    outputs = sorted(sa.anonymize(i) for i in range(4))
-    assert outputs == [0, 1, 2, 3]
+    domain = range(4)
+    outputs = [sa.anonymize(i) for i in domain]
+
+    # Bijectivity: output set equals input set
+    assert sorted(outputs) == [0, 1, 2, 3]
+
+    # Non-triviality: the permutation must NOT be the identity
+    assert outputs != list(domain), (
+        "anonymize() returned the identity permutation at bit_width=2 — "
+        "cipher is broken (round function likely collapses to zero)"
+    )
 
 
 def test_bit_width_2_round_trip():

@@ -163,8 +163,12 @@ class SnowflakeAnonymizer:
         # Multiply by an odd number derived from the round key for non-linearity
         x = (x * (round_key | 1)) & mask
 
-        # Primary fold: mix upper half of word into lower half
-        x ^= x >> (w // 2)
+        # Primary fold: mix upper half of word into lower half.
+        # Guard: when w=1 the raw shift w//2 is 0, which computes x^=x → 0
+        # and collapses the round function to a constant, making the entire
+        # cipher an identity permutation.  min shift of 1 turns the fold into
+        # a harmless no-op for 1-bit halves while preserving behaviour for w≥2.
+        x ^= x >> max(1, w // 2)
 
         # Secondary fold: quarter-width mix for broader avalanche on wide words
         if w >= 4:
