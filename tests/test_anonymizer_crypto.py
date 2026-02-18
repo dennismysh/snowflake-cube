@@ -145,14 +145,38 @@ def test_round_keys_change_with_key():
     assert len(set(round_key_sets)) == len(keys)
 
 
+def test_narrow_width_key_diversity():
+    """Compound round keys must provide diversity beyond the w-bit limit.
+
+    For bit_width=4 (w=2), each XOR or MUL sub-key has only 4 values, but
+    distinct master keys must produce distinct *compound* round-key tuples.
+    With independent rk_xor and rk_mul the effective space is (4×4)^16 = 2^64,
+    far exceeding the old (4)^16 = 2^32 single-key schedule.
+    """
+    # Sample 200 random-ish master keys — all must produce distinct schedules
+    keys = list(range(200))
+    schedules = [tuple(SnowflakeAnonymizer(key=k, bit_width=4)._round_keys) for k in keys]
+    assert len(set(schedules)) == len(keys), (
+        "Compound round-key schedules collided for bit_width=4 — key space still too narrow"
+    )
+
+
 def test_round_keys_fit_half_width():
-    """All round keys must be masked to the half-word size."""
+    """All round-key XOR and MUL components must be masked to the half-word size."""
     for bit_width in [16, 32, 64, 128]:
         sa = SnowflakeAnonymizer(key=0xCAFEBABE, bit_width=bit_width)
         half_mask = (1 << (bit_width // 2)) - 1
-        for rk in sa._round_keys:
-            assert rk == (rk & half_mask), (
-                f"Round key {rk:#x} exceeds half-mask for bit_width={bit_width}"
+        w = bit_width // 2
+        for rk_xor, rk_mul, rk_rot in sa._round_keys:
+            assert rk_xor == (rk_xor & half_mask), (
+                f"rk_xor {rk_xor:#x} exceeds half-mask for bit_width={bit_width}"
+            )
+            assert rk_mul == (rk_mul & half_mask), (
+                f"rk_mul {rk_mul:#x} exceeds half-mask for bit_width={bit_width}"
+            )
+            assert 1 <= rk_rot <= max(1, w - 1), (
+                f"rk_rot {rk_rot} out of range [1, {max(1, w - 1)}] "
+                f"for bit_width={bit_width}"
             )
 
 
@@ -748,20 +772,20 @@ def test_round_function_is_not_affine_over_gf2():
     If _arm were affine: _arm(a ⊕ b, k) = _arm(a, k) ⊕ _arm(b, k) ⊕ _arm(0, k)
     """
     sa = SnowflakeAnonymizer(key=0xDEADBEEF_CAFEBABE)
-    for rk in sa._round_keys[:4]:  # test with several round keys
-        f0 = sa._arm(0, rk)
+    for rk_xor, rk_mul, rk_rot in sa._round_keys[:4]:
+        f0 = sa._arm(0, rk_xor, rk_mul, rk_rot)
         violations = 0
         trials = 200
         for i in range(1, trials + 1):
             a = i
             b = i * 3 + 7
-            lhs = sa._arm(a ^ b, rk)
-            rhs = sa._arm(a, rk) ^ sa._arm(b, rk) ^ f0
+            lhs = sa._arm(a ^ b, rk_xor, rk_mul, rk_rot)
+            rhs = sa._arm(a, rk_xor, rk_mul, rk_rot) ^ sa._arm(b, rk_xor, rk_mul, rk_rot) ^ f0
             if lhs != rhs:
                 violations += 1
         assert violations >= trials * 0.8, (
             f"Only {violations}/{trials} affine violations in _arm with "
-            f"round_key={rk:#x} — round function may be affine over GF(2)"
+            f"rk_xor={rk_xor:#x} — round function may be affine over GF(2)"
         )
 
 

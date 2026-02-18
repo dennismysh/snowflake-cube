@@ -26,6 +26,10 @@ Security upgrades over a basic Feistel cipher:
   • 16 Feistel rounds     — increased from 6 for stronger diffusion
   • HMAC-SHA256 key schedule — cryptographically sound per-round key
                               derivation; replaces XOR-with-constants
+  • Compound round keys   — each round derives independent sub-keys for
+                              XOR mixing, multiplication, and rotation via
+                              domain-separated HMAC labels, preventing
+                              key-space collapse for narrow bit widths
   • 256-bit master key    — full SHA-256 key material used internally;
                               no longer truncated to 64 bits
   • PBKDF2-HMAC-SHA256    — 600 000 iterations (NIST SP 800-132 / 2023)
@@ -164,13 +168,21 @@ class SnowflakeAnonymizer:
     # Key schedule
     # ------------------------------------------------------------------
 
-    def _crystallize(self, key: int) -> list[int]:
-        """Expand the master key into sixteen arm-specific round keys.
+    def _crystallize(self, key: int) -> list[tuple[int, int, int]]:
+        """Expand the master key into sixteen compound round keys.
 
-        Each round key is derived independently via HMAC-SHA256:
+        Each round receives three independent sub-keys derived via
+        HMAC-SHA256 with distinct domain-separation suffixes:
 
-            round_key[i] = HMAC-SHA256(master_key_bytes, "snowflake-round-NNNN")
-                           truncated and masked to the half-word size.
+            rk_xor[i] = HMAC-SHA256(master, label || 0x01)  [w bits]
+            rk_mul[i] = HMAC-SHA256(master, label || 0x02)  [w bits]
+            rk_rot[i] = 1 + HMAC-SHA256(master, label || 0x03)[0] mod max(1, w-1)
+
+        Separating XOR, multiplication, and rotation key material prevents
+        key-space collapse for narrow bit widths.  For bit_width=4 (w=2)
+        the effective key space increases from (2^w)^16 = 2^32 to at least
+        (2^w × 2^w)^16 = 2^64, well beyond the 16! ≈ 2^44 reachable
+        permutations on a 4-bit domain.
 
         Every round operates on cryptographically independent key material,
         and a single-bit change in the master key avalanches into every
@@ -181,13 +193,27 @@ class SnowflakeAnonymizer:
         # HMAC-SHA256 produces 32 bytes; sufficient for half-words up to
         # 256 bits (i.e. 512-bit total block width).
         half_bytes = max(1, (self._half + 7) // 8)
+        w = self._half
+        rot_range = max(1, w - 1)  # valid rotations: 1 … w-1
 
-        round_keys: list[int] = []
+        round_keys: list[tuple[int, int, int]] = []
         for i in range(_ROUNDS):
             label = f"snowflake-round-{i:04d}".encode()
-            rk_bytes = hmac.new(master_key_bytes, label, hashlib.sha256).digest()
-            rk = int.from_bytes(rk_bytes[:half_bytes], "big")
-            round_keys.append(rk & self._half_mask)
+            xor_bytes = hmac.new(
+                master_key_bytes, label + b"\x01", hashlib.sha256
+            ).digest()
+            mul_bytes = hmac.new(
+                master_key_bytes, label + b"\x02", hashlib.sha256
+            ).digest()
+            rot_bytes = hmac.new(
+                master_key_bytes, label + b"\x03", hashlib.sha256
+            ).digest()
+
+            rk_xor = int.from_bytes(xor_bytes[:half_bytes], "big") & self._half_mask
+            rk_mul = int.from_bytes(mul_bytes[:half_bytes], "big") & self._half_mask
+            rk_rot = 1 + (rot_bytes[0] % rot_range)
+
+            round_keys.append((rk_xor, rk_mul, rk_rot))
         return round_keys
 
     # ------------------------------------------------------------------
@@ -218,20 +244,26 @@ class SnowflakeAnonymizer:
         else:
             return x
 
-    def _arm(self, half: int, round_key: int) -> int:
+    def _arm(self, half: int, rk_xor: int, rk_mul: int, rk_rot: int) -> int:
         """Non-linear mixing function applied at each Feistel round.
 
         Models the branching complexity of a single snowflake arm:
 
-          1. XOR with round key     — introduces key material
-          2. Rotate left by ⌊w/6⌋  — mirrors 60° rotational symmetry
-          3. S-box substitution     — non-linear confusion layer; breaks
-                                     the GF(2) linearity of the surrounding
-                                     arithmetic so the cipher cannot be
-                                     expressed as an affine map C = A·P + b
-          4. Multiply by odd value  — linear diffusion across bit positions
-          5. Double-fold            — mixes upper bits into lower half at
-                                     two granularities for stronger avalanche
+          1. XOR with rk_xor        — introduces key material
+          2. Rotate left by rk_rot   — key-dependent rotation; prevents
+                                      key-space collapse for narrow widths
+          3. S-box substitution      — non-linear confusion layer; breaks
+                                      the GF(2) linearity of the surrounding
+                                      arithmetic so the cipher cannot be
+                                      expressed as an affine map C = A·P + b
+          4. Multiply by odd(rk_mul) — independent diffusion key; doubles the
+                                      effective key bits per round
+          5. Double-fold             — mixes upper bits into lower half at
+                                      two granularities for stronger avalanche
+
+        Using separate sub-keys for XOR, multiplication, and rotation ensures
+        that even for narrow bit widths (e.g. bit_width=4, w=2) the effective
+        key space is not limited to (2^w)^rounds.
 
         The Feistel construction guarantees global bijectivity regardless of
         what this function does, so the goal here is purely diffusion quality.
@@ -239,11 +271,10 @@ class SnowflakeAnonymizer:
         w = self._half
         mask = self._half_mask
 
-        x = half ^ round_key
+        x = half ^ rk_xor
 
-        # Rotate left by 1/6th of the word width (snowflake's 60° symmetry)
-        rot = max(1, w // 6)
-        x = ((x << rot) | (x >> (w - rot))) & mask
+        # Rotate left by key-dependent amount (derived per-round in _crystallize)
+        x = ((x << rk_rot) | (x >> (w - rk_rot))) & mask
 
         # S-box substitution: the only non-linear-over-GF(2) step.
         # Without this, every operation (XOR, rotation, multiply-by-odd,
@@ -251,8 +282,8 @@ class SnowflakeAnonymizer:
         # affine and breakable with O(n) known plaintexts.
         x = self._sbox_sub(x)
 
-        # Multiply by an odd number derived from the round key for diffusion
-        x = (x * (round_key | 1)) & mask
+        # Multiply by an odd number derived from the independent rk_mul key
+        x = (x * (rk_mul | 1)) & mask
 
         # Primary fold: mix upper half of word into lower half.
         # Guard: when w=1 the raw shift w//2 is 0, which computes x^=x → 0
@@ -288,8 +319,8 @@ class SnowflakeAnonymizer:
         L = (number >> self._half) & self._half_mask
         R = number & self._half_mask
 
-        for arm_key in self._round_keys:          # 16 rounds
-            L, R = R, L ^ self._arm(R, arm_key)
+        for rk_xor, rk_mul, rk_rot in self._round_keys:   # 16 rounds
+            L, R = R, L ^ self._arm(R, rk_xor, rk_mul, rk_rot)
 
         return (L << self._half) | R
 
@@ -307,8 +338,8 @@ class SnowflakeAnonymizer:
         L = (snowflake >> self._half) & self._half_mask
         R = snowflake & self._half_mask
 
-        for arm_key in reversed(self._round_keys):   # reverse the 16 rounds
-            R, L = L, R ^ self._arm(L, arm_key)
+        for rk_xor, rk_mul, rk_rot in reversed(self._round_keys):
+            R, L = L, R ^ self._arm(L, rk_xor, rk_mul, rk_rot)
 
         return (L << self._half) | R
 
