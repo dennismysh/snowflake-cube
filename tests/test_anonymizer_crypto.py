@@ -181,6 +181,83 @@ def test_round_keys_fit_half_width():
 
 
 # ===========================================================================
+# D½. Rotation amount must be key-dependent and per-round variable
+#     Regression for Finding 5 (Fixed, Key-Independent Rotation):
+#     The original cipher used  rot = max(1, w//6)  — a constant for all
+#     rounds and all keys (5 bits for 64-bit blocks).  Attackers could absorb
+#     the known rotation into a pre-computed GF(2) basis, simplifying
+#     algebraic analysis.  The fix derives each round's rotation via
+#     HMAC-SHA256 so that the amounts are key-dependent and per-round.
+# ===========================================================================
+
+
+def test_rotation_varies_across_rounds():
+    """Rotation amounts must NOT be the same constant in every round.
+
+    A fixed rotation (like the original w//6) lets an attacker factor out the
+    rotation from their algebraic model before breaking the cipher.  Per-round
+    HMAC-derived rotations prevent this.
+    """
+    for bit_width in [16, 32, 64, 128]:
+        sa = SnowflakeAnonymizer(key=0xDEADBEEF, bit_width=bit_width)
+        rotations = [rk_rot for _, _, rk_rot in sa._round_keys]
+        # With 16 rounds and a range of [1, w-1], the probability that all
+        # 16 independently-derived rotations are identical is vanishingly
+        # small (~1/(w-1)^15).  A fixed constant would fail this check.
+        assert len(set(rotations)) > 1, (
+            f"All 16 rotation amounts are identical ({rotations[0]}) for "
+            f"bit_width={bit_width} — rotations appear to be a fixed constant "
+            f"rather than key-derived per-round values"
+        )
+
+
+def test_rotation_depends_on_key():
+    """Different master keys must produce different rotation schedules.
+
+    If the rotation amounts are derived from a formula like max(1, w//6) that
+    ignores the key, every key yields the same rotations and an attacker can
+    pre-compute the GF(2) basis once for all keys.
+    """
+    keys = [0, 1, 42, 0xCAFEBABE, 0xDEAD_BEEF_CAFE]
+    for bit_width in [32, 64]:
+        rotation_schedules = []
+        for k in keys:
+            sa = SnowflakeAnonymizer(key=k, bit_width=bit_width)
+            rotation_schedules.append(
+                tuple(rk_rot for _, _, rk_rot in sa._round_keys)
+            )
+        assert len(set(rotation_schedules)) == len(keys), (
+            f"Multiple distinct keys produced identical rotation schedules "
+            f"for bit_width={bit_width} — rotations may not depend on the key"
+        )
+
+
+def test_rotation_is_not_fixed_w_over_6():
+    """Rotation must NOT be the old fixed formula max(1, w//6).
+
+    Directly tests that the vulnerability described in Finding 5 has not
+    been reintroduced.  For each round, at least some rotation amounts must
+    differ from the old constant.
+    """
+    for bit_width in [16, 32, 64, 128]:
+        w = bit_width // 2
+        old_fixed_rot = max(1, w // 6)
+        sa = SnowflakeAnonymizer(key=0xABCD1234, bit_width=bit_width)
+        rotations = [rk_rot for _, _, rk_rot in sa._round_keys]
+        count_matching_old = sum(1 for r in rotations if r == old_fixed_rot)
+        # With uniform distribution over [1, w-1], we'd expect ~16/(w-1) rounds
+        # to hit any particular value by chance.  Require that the schedule is
+        # not ALL set to the old constant — that would indicate the old formula
+        # was restored.
+        assert count_matching_old < len(rotations), (
+            f"All 16 rotation amounts equal the old fixed constant "
+            f"max(1, w//6) = {old_fixed_rot} for bit_width={bit_width} — "
+            f"the key-independent rotation vulnerability may have been "
+            f"reintroduced"
+        )
+
+
+# ===========================================================================
 # E. Statistical properties
 #    The output of a good cipher is indistinguishable from random noise.
 #    We apply statistical heuristics — not hard randomness proofs.
