@@ -27,6 +27,8 @@ the same scramble, and the bijective avalanche effect means small changes in
 the original number produce radically different cube states.
 """
 
+import hashlib
+
 # ---------------------------------------------------------------------------
 # Standard Rubik's cube notation
 # ---------------------------------------------------------------------------
@@ -60,7 +62,13 @@ class _SplitMix64:
     """
 
     def __init__(self, seed: int) -> None:
-        self._state = seed & _U64_MASK
+        # Hash the seed with SHA-256 so that the PRNG state cannot be
+        # inverted back to the original snowflake.  SplitMix64's mixing
+        # function is fully invertible; without this pre-hash an observer
+        # who sees the scramble output could recover the seed in closed form.
+        seed_bytes = seed.to_bytes((seed.bit_length() + 7) // 8 or 1, "little")
+        digest = hashlib.sha256(seed_bytes).digest()
+        self._state = int.from_bytes(digest[:8], "little") & _U64_MASK
 
     def _next(self) -> int:
         """Advance state and return a 64-bit value."""
