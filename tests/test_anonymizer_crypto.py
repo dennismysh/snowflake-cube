@@ -690,3 +690,96 @@ def test_no_constant_output_for_any_key():
         assert len(outputs) >= 8, (
             f"key={key} nearly constant output: {outputs}"
         )
+
+
+# ===========================================================================
+# Q. GF(2) non-linearity
+#    The round function and the full cipher must NOT be affine over GF(2).
+#    An affine cipher satisfies f(a ⊕ b) = f(a) ⊕ f(b) ⊕ f(0) for all a, b.
+#    If this property holds, an adversary can recover the full affine map
+#    with O(n) known plaintext–ciphertext pairs via Gaussian elimination.
+# ===========================================================================
+
+def test_cipher_is_not_affine_over_gf2(sa):
+    """The full cipher must violate the GF(2) affine identity.
+
+    For an affine function f over GF(2):  f(a ⊕ b) = f(a) ⊕ f(b) ⊕ f(0).
+    A non-linear cipher should violate this for the vast majority of inputs.
+    """
+    f0 = sa.anonymize(0)
+    violations = 0
+    trials = 200
+    for i in range(1, trials + 1):
+        a = i
+        b = i * 7 + 13
+        lhs = sa.anonymize(a ^ b)
+        rhs = sa.anonymize(a) ^ sa.anonymize(b) ^ f0
+        if lhs != rhs:
+            violations += 1
+    assert violations >= trials * 0.9, (
+        f"Only {violations}/{trials} affine-property violations — "
+        f"cipher may be affine over GF(2)"
+    )
+
+
+def test_cipher_is_not_affine_over_gf2_32bit(sa32):
+    """Same GF(2) non-linearity test for the 32-bit variant."""
+    f0 = sa32.anonymize(0)
+    violations = 0
+    trials = 200
+    for i in range(1, trials + 1):
+        a = i
+        b = i * 11 + 5
+        a &= 0xFFFF_FFFF
+        b &= 0xFFFF_FFFF
+        lhs = sa32.anonymize(a ^ b)
+        rhs = sa32.anonymize(a) ^ sa32.anonymize(b) ^ f0
+        if lhs != rhs:
+            violations += 1
+    assert violations >= trials * 0.9, (
+        f"Only {violations}/{trials} affine-property violations (32-bit) — "
+        f"cipher may be affine over GF(2)"
+    )
+
+
+def test_round_function_is_not_affine_over_gf2():
+    """The round function _arm itself must not be affine over GF(2).
+
+    If _arm were affine: _arm(a ⊕ b, k) = _arm(a, k) ⊕ _arm(b, k) ⊕ _arm(0, k)
+    """
+    sa = SnowflakeAnonymizer(key=0xDEADBEEF_CAFEBABE)
+    for rk in sa._round_keys[:4]:  # test with several round keys
+        f0 = sa._arm(0, rk)
+        violations = 0
+        trials = 200
+        for i in range(1, trials + 1):
+            a = i
+            b = i * 3 + 7
+            lhs = sa._arm(a ^ b, rk)
+            rhs = sa._arm(a, rk) ^ sa._arm(b, rk) ^ f0
+            if lhs != rhs:
+                violations += 1
+        assert violations >= trials * 0.8, (
+            f"Only {violations}/{trials} affine violations in _arm with "
+            f"round_key={rk:#x} — round function may be affine over GF(2)"
+        )
+
+
+def test_gf2_nonlinearity_across_keys():
+    """Non-linearity must hold across different keys, not just one."""
+    for key in [0, 1, 0xDEAD, 0x1234_5678_9ABC_DEF0, 2**64 - 1]:
+        sa = SnowflakeAnonymizer(key=key)
+        f0 = sa.anonymize(0)
+        violations = 0
+        trials = 100
+        for i in range(1, trials + 1):
+            a = i * 3
+            b = i * 5 + 1
+            lhs = sa.anonymize(a ^ b)
+            rhs = sa.anonymize(a) ^ sa.anonymize(b) ^ f0
+            if lhs != rhs:
+                violations += 1
+        assert violations >= trials * 0.8, (
+            f"key={key}: only {violations}/{trials} affine violations — "
+            f"cipher may be affine over GF(2)"
+        )
