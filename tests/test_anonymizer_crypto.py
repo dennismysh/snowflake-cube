@@ -124,18 +124,18 @@ def test_no_identity_mapping():
 # ===========================================================================
 
 def test_round_keys_are_distinct():
-    """All 6 round keys must be pairwise distinct."""
+    """All 16 round keys must be pairwise distinct."""
     for key in [0, 1, 0xDEADBEEF, 2**64 - 1]:
         sa = SnowflakeAnonymizer(key=key)
-        assert len(set(sa._round_keys)) == 6, (
+        assert len(set(sa._round_keys)) == 16, (
             f"key={key} produced duplicate round keys: {sa._round_keys}"
         )
 
 
 def test_round_keys_depend_on_arm_index():
-    """Even with key=0 the round keys must all differ (arm-index mixing)."""
+    """Even with key=0 the round keys must all differ (HMAC-label mixing)."""
     sa = SnowflakeAnonymizer(key=0)
-    assert len(set(sa._round_keys)) == 6
+    assert len(set(sa._round_keys)) == 16
 
 
 def test_round_keys_change_with_key():
@@ -438,20 +438,22 @@ def test_from_passphrase_whitespace_sensitivity():
 
 
 def test_from_passphrase_different_bit_widths_differ():
-    """Same passphrase but different bit_width must produce different ciphers."""
+    """Same passphrase and salt but different bit_width must produce different ciphers."""
     phrase = "crystal lattice"
-    sa32 = SnowflakeAnonymizer.from_passphrase(phrase, bit_width=32)
-    sa64 = SnowflakeAnonymizer.from_passphrase(phrase, bit_width=64)
+    salt = b"fixed-salt-12345"
+    sa32 = SnowflakeAnonymizer.from_passphrase(phrase, bit_width=32, salt=salt)
+    sa64 = SnowflakeAnonymizer.from_passphrase(phrase, bit_width=64, salt=salt)
     n = 1_000
     assert sa32.anonymize(n) != sa64.anonymize(n)
 
 
-def test_from_passphrase_uses_sha256():
-    """Verify that from_passphrase internally uses SHA-256 for key derivation."""
+def test_from_passphrase_uses_pbkdf2():
+    """Verify that from_passphrase uses PBKDF2-HMAC-SHA256 (600 000 iterations)."""
     phrase = "test vector"
-    expected_digest = hashlib.sha256(phrase.encode()).digest()
-    expected_key = int.from_bytes(expected_digest[:8], "big")
-    sa_passphrase = SnowflakeAnonymizer.from_passphrase(phrase)
+    salt = b"\x00" * 16
+    expected_digest = hashlib.pbkdf2_hmac("sha256", phrase.encode(), salt, 600_000, dklen=32)
+    expected_key = int.from_bytes(expected_digest, "big")
+    sa_passphrase = SnowflakeAnonymizer.from_passphrase(phrase, salt=salt)
     sa_direct = SnowflakeAnonymizer(key=expected_key)
     assert sa_passphrase.anonymize(42) == sa_direct.anonymize(42)
 
