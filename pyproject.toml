@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snowflake-anonymizer"
+version = "0.1.0"
+description = "A bijective number anonymizer inspired by the hexagonal geometry of snowflakes"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
