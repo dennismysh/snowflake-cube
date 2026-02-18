@@ -163,8 +163,11 @@ def test_from_passphrase_different_phrases():
 
 
 def test_from_passphrase_same_phrase_same_output():
-    sa1 = SnowflakeAnonymizer.from_passphrase("same")
-    sa2 = SnowflakeAnonymizer.from_passphrase("same")
+    # A fixed salt must be supplied to reproduce the same key across calls.
+    # Random salts are intentional: store sa.salt alongside anonymized data.
+    salt = b"deterministic-16"
+    sa1 = SnowflakeAnonymizer.from_passphrase("same", salt=salt)
+    sa2 = SnowflakeAnonymizer.from_passphrase("same", salt=salt)
     assert sa1.anonymize(999) == sa2.anonymize(999)
 
 
