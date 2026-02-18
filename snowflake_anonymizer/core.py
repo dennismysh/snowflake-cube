@@ -8,7 +8,7 @@ snowflakes experience exactly the same conditions).
 
 This anonymizer mirrors that geometry:
 
-  • 16 Feistel rounds  — bank-grade round count, matching AES-256
+  • 16 Feistel rounds  — provides strong diffusion for a Feistel network
   • Key = the "atmospheric conditions" that shape the crystal
   • Bijective          — every input maps to a *unique* output (no collisions)
   • Reversible         — the original number is recoverable with the same key
@@ -22,8 +22,8 @@ Algorithm: Balanced Feistel network
 Because the Feistel structure is inherently bijective, the arm_function
 itself need not be invertible — it just needs good diffusion (avalanche).
 
-Bank-grade security upgrades over a basic Feistel cipher:
-  • 16 Feistel rounds     — matches AES-256's round count (up from 6)
+Security upgrades over a basic Feistel cipher:
+  • 16 Feistel rounds     — increased from 6 for stronger diffusion
   • HMAC-SHA256 key schedule — cryptographically sound per-round key
                               derivation; replaces XOR-with-constants
   • 256-bit master key    — full SHA-256 key material used internally;
@@ -46,8 +46,8 @@ import os
 # Security parameters
 # ---------------------------------------------------------------------------
 
-# 16 rounds matches AES-256's round count — the gold standard for symmetric
-# encryption used in banking, payments, and regulated industries.
+# 16 rounds provides strong diffusion for a balanced Feistel network.
+# Increased from the original 6 rounds to improve avalanche properties.
 _ROUNDS: int = 16
 
 # NIST SP 800-132 (2023) recommends ≥ 600 000 PBKDF2-HMAC-SHA256 iterations
@@ -119,9 +119,9 @@ def _key_to_bytes(key: int) -> bytes:
 class SnowflakeAnonymizer:
     """Bijective number anonymizer based on a 16-round Feistel cipher.
 
-    Bank-grade security properties:
+    Security properties:
 
-    - **16 Feistel rounds** — AES-256's round count; prior value was 6.
+    - **16 Feistel rounds** — increased from 6 for stronger diffusion.
     - **HMAC-SHA256 key schedule** — each of the 16 round keys is derived
       independently as ``HMAC-SHA256(master_key, round_label)``; no two
       round keys share derivation material.
@@ -172,9 +172,9 @@ class SnowflakeAnonymizer:
             round_key[i] = HMAC-SHA256(master_key_bytes, "snowflake-round-NNNN")
                            truncated and masked to the half-word size.
 
-        This is equivalent in strength to the AES-256 key schedule: every
-        round operates on cryptographically independent key material, and a
-        single-bit change in the master key avalanches into every round key.
+        Every round operates on cryptographically independent key material,
+        and a single-bit change in the master key avalanches into every
+        round key.
         """
         master_key_bytes = _key_to_bytes(key)
         # Number of bytes needed to cover the half-word bit width.
