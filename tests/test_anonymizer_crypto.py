@@ -710,22 +710,22 @@ def test_boolean_false_treated_as_zero(sa):
 
 
 def test_float_input_raises(sa):
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(TypeError, match="value must be an integer"):
         sa.anonymize(3.14)
 
 
 def test_string_input_raises(sa):
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(TypeError, match="value must be an integer"):
         sa.anonymize("42")
 
 
 def test_none_input_raises(sa):
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(TypeError, match="value must be an integer"):
         sa.anonymize(None)
 
 
 def test_list_input_raises(sa):
-    with pytest.raises((TypeError, ValueError)):
+    with pytest.raises(TypeError, match="value must be an integer"):
         sa.anonymize([42])
 
 
@@ -1021,3 +1021,108 @@ def test_gf2_nonlinearity_across_keys():
             f"key={key}: only {violations}/{trials} affine violations — "
             f"cipher may be affine over GF(2)"
         )
+
+
+# ===========================================================================
+# R. Explicit type-checking gates (Finding 7)
+#    All public entry points must reject non-integer types with a clear
+#    TypeError rather than relying on downstream operator failures.
+# ===========================================================================
+
+def test_constructor_rejects_float_key():
+    with pytest.raises(TypeError, match="key must be an integer"):
+        SnowflakeAnonymizer(key=3.14)
+
+
+def test_constructor_rejects_string_key():
+    with pytest.raises(TypeError, match="key must be an integer"):
+        SnowflakeAnonymizer(key="secret")
+
+
+def test_constructor_rejects_bool_key():
+    """bool is a subclass of int but should be rejected as a key."""
+    with pytest.raises(TypeError, match="key must be an integer"):
+        SnowflakeAnonymizer(key=True)
+
+
+def test_constructor_rejects_none_key():
+    with pytest.raises(TypeError, match="key must be an integer"):
+        SnowflakeAnonymizer(key=None)
+
+
+def test_constructor_rejects_float_bit_width():
+    with pytest.raises(TypeError, match="bit_width must be an integer"):
+        SnowflakeAnonymizer(bit_width=64.0)
+
+
+def test_constructor_rejects_bool_bit_width():
+    with pytest.raises(TypeError, match="bit_width must be an integer"):
+        SnowflakeAnonymizer(bit_width=True)
+
+
+def test_constructor_rejects_string_bit_width():
+    with pytest.raises(TypeError, match="bit_width must be an integer"):
+        SnowflakeAnonymizer(bit_width="64")
+
+
+def test_deanonymize_rejects_float(sa):
+    with pytest.raises(TypeError, match="value must be an integer"):
+        sa.deanonymize(1.0)
+
+
+def test_deanonymize_rejects_string(sa):
+    with pytest.raises(TypeError, match="value must be an integer"):
+        sa.deanonymize("42")
+
+
+def test_from_passphrase_rejects_non_string_passphrase():
+    with pytest.raises(TypeError, match="passphrase must be a string"):
+        SnowflakeAnonymizer.from_passphrase(12345)
+
+
+def test_from_passphrase_rejects_bytes_passphrase():
+    with pytest.raises(TypeError, match="passphrase must be a string"):
+        SnowflakeAnonymizer.from_passphrase(b"secret")
+
+
+def test_from_passphrase_rejects_non_bytes_salt():
+    with pytest.raises(TypeError, match="salt must be bytes or None"):
+        SnowflakeAnonymizer.from_passphrase("secret", salt="not-bytes")
+
+
+def test_from_passphrase_rejects_int_salt():
+    with pytest.raises(TypeError, match="salt must be bytes or None"):
+        SnowflakeAnonymizer.from_passphrase("secret", salt=42)
+
+
+# ===========================================================================
+# S. Salt attribute always present (Finding 8)
+#    Direct SnowflakeAnonymizer(key=...) instances must expose a .salt
+#    attribute (defaulting to None) so that callers never hit AttributeError.
+# ===========================================================================
+
+def test_direct_instance_has_salt_attribute():
+    """Instances created via __init__ must have .salt set to None."""
+    sa = SnowflakeAnonymizer(key=42)
+    assert hasattr(sa, "salt")
+    assert sa.salt is None
+
+
+def test_from_passphrase_salt_is_bytes():
+    """Instances created via from_passphrase must have .salt as bytes."""
+    sa = SnowflakeAnonymizer.from_passphrase("test")
+    assert isinstance(sa.salt, bytes)
+    assert len(sa.salt) == 16
+
+
+def test_from_passphrase_preserves_explicit_salt():
+    explicit_salt = b"\x00" * 16
+    sa = SnowflakeAnonymizer.from_passphrase("test", salt=explicit_salt)
+    assert sa.salt == explicit_salt
+
+
+def test_salt_none_on_direct_does_not_interfere():
+    """A direct instance with salt=None must still anonymize correctly."""
+    sa = SnowflakeAnonymizer(key=99)
+    assert sa.salt is None
+    assert sa.deanonymize(sa.anonymize(42)) == 42
